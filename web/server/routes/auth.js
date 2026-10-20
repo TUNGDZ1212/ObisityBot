@@ -1,84 +1,77 @@
-// Discord OAuth2 Login / Session. Phiên đăng nhập lưu trong cookie httpOnly chứa JWT (user + access token Discord).
-import { Router } from 'express';
-import crypto from 'node:crypto';
-import jwt from 'jsonwebtoken';
+// Anti-spam, kiểm duyệt từ khoá & AI Auto-responder khi Ping Bot
+import { PermissionFlagsBits } from 'discord.js';
+import GuildConfig from '../database/models/GuildConfig.js';
+import { logger } from '../utils/logger.js';
+// TODO: Sửa lại đường dẫn import này cho đúng với vị trí file AI thực tế trong dự án (ví dụ: ../commands/setupai.js)
+import { generateAIResponse } from '../services/aiService.js'; 
 
-const router = Router();
-const API = 'https://discord.com/api/v10';
-const SESSION_COOKIE = 'session';
-const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
-const isProd = process.env.NODE_ENV === 'production';
-const redirectUri = () => `${process.env.SERVER_URL}/api/auth/callback`;
+export const name = 'messageCreate';
 
-// Đọc và xác thực JWT phiên từ cookie. Trả về null nếu không hợp lệ.
-export function getSession(req) {
-  const token = req.cookies?.[SESSION_COOKIE];
-  if (!token) return null;
-  try {
-    return jwt.verify(token, process.env.JWT_SECRET);
-  } catch {
-    return null;
-  }
+const configCache = new Map();
+const history = new Map();
+const CACHE_MS = 60_000;
+
+async function getGuildConfig(guildId) {
+  const cached = configCache.get(guildId);
+  if (cached && Date.now() - cached.at < CACHE_MS) return cached.data;
+  const doc = await GuildConfig.findOne({ guildId }).lean();
+  configCache.set(guildId, { at: Date.now(), data: doc });
+  return doc;
 }
 
-// Bước 1: chuyển người dùng sang trang cấp quyền của Discord, kèm state chống CSRF
-router.get('/discord', (req, res) => {
-  const state = crypto.randomBytes(16).toString('hex');
-  res.cookie('oauth_state', state, { httpOnly: true, sameSite: 'lax', secure: isProd, maxAge: 10 * 60 * 1000 });
-  const params = new URLSearchParams({
-    client_id: process.env.CLIENT_ID,
-    redirect_uri: redirectUri(),
-    response_type: 'code',
-    scope: 'identify guilds',
-    state,
-  });
-  res.redirect(`https://discord.com/oauth2/authorize?${params}`);
-});
+const notify = (channel, text) =>
+  channel.send(text).then((m) => setTimeout(() => m.delete().catch(() => {}), 5000)).catch(() => {});
 
-// Bước 2: Discord redirect về đây với code, đổi code lấy access token và tạo phiên
-router.get('/callback', async (req, res, next) => {
-  try {
-    const { code, state } = req.query;
-    if (!code || !state || state !== req.cookies?.oauth_state) {
-      return res.status(400).send('Invalid OAuth state');
+export async function execute(message) {
+  if (!message.guild || message.author.bot) return;
+
+  const doc = await getGuildConfig(message.guild.id);
+  const cfg = doc?.antispam ?? null;
+  const isExempt = message.member?.permissions.has(PermissionFlagsBits.ManageMessages);
+
+  // 1 & 2) Kiểm duyệt từ khóa & Anti-spam
+  if (cfg?.enabled && !isExempt) {
+    const content = message.content.toLowerCase();
+    if (cfg.blockedWords?.some((w) => w && content.includes(w.toLowerCase()))) {
+      await message.delete().catch(() => {});
+      return notify(message.channel, `${message.author}, tin nhắn chứa từ bị cấm.`);
     }
-    res.clearCookie('oauth_state');
 
-    const tokenRes = await fetch(`${API}/oauth2/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: process.env.CLIENT_ID,
-        client_secret: process.env.CLIENT_SECRET,
-        grant_type: 'authorization_code',
-        code,
-        redirect_uri: redirectUri(),
-      }),
-    });
-    if (!tokenRes.ok) return res.status(401).send('Token exchange failed');
-    const { access_token } = await tokenRes.json();
+    const key = `${message.guild.id}:${message.author.id}`;
+    const now = Date.now();
+    const windowMs = (cfg.windowSeconds || 5) * 1000;
+    const times = (history.get(key) ?? []).filter((t) => now - t < windowMs);
+    times.push(now);
+    history.set(key, times);
 
-    const me = await fetch(`${API}/users/@me`, { headers: { Authorization: `Bearer ${access_token}` } }).then((r) => r.json());
-    const user = { id: me.id, username: me.username, global_name: me.global_name, avatar: me.avatar };
-
-    const token = jwt.sign({ user, accessToken: access_token }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    res.cookie(SESSION_COOKIE, token, { httpOnly: true, sameSite: 'lax', secure: isProd, maxAge: SESSION_TTL });
-    res.redirect(`${process.env.CLIENT_URL}/servers`);
-  } catch (err) {
-    next(err);
+    if (times.length > cfg.maxMessages) {
+      history.delete(key);
+      await message.delete().catch(() => {});
+      await message.member?.timeout(cfg.timeoutMinutes * 60_000, 'Anti-spam').catch((err) =>
+        logger.warn(`Timeout failed: ${err.message}`),
+      );
+      return notify(message.channel, `${message.author} bị timeout ${cfg.timeoutMinutes} phút do spam.`);
+    }
   }
-});
 
-// Trả thông tin người dùng hiện tại (dùng cho AuthContext ở frontend)
-router.get('/me', (req, res) => {
-  const session = getSession(req);
-  if (!session) return res.status(401).json({ error: 'Unauthorized' });
-  res.json(session.user);
-});
+  // 3) Xử lý AI khi người dùng Ping (@Bot)
+  if (message.mentions.has(message.client.user)) {
+    const prompt = message.content
+      .replace(`<@${message.client.user.id}>`, '')
+      .replace(`<@!${message.client.user.id}>`, '')
+      .trim();
 
-router.post('/logout', (req, res) => {
-  res.clearCookie(SESSION_COOKIE);
-  res.json({ ok: true });
-});
+    if (!prompt) {
+      return message.reply('Bạn cần mình hỗ trợ gì thế? Hãy nhắn câu hỏi kèm lượt ping nhé!');
+    }
 
-export default router;
+    try {
+      await message.channel.sendTyping();
+      const response = await generateAIResponse(prompt, message.guild.id);
+      await message.reply(response);
+    } catch (err) {
+      logger.error(`[AI Mention Error]: ${err.message}`);
+      await message.reply('Đã xảy ra lỗi khi xử lý câu hỏi AI của bạn.');
+    }
+  }
+}

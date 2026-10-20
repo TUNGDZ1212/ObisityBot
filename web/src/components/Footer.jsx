@@ -4,9 +4,8 @@ import { useLanguage } from '../context/LanguageContext.jsx';
 
 const CONTACT = {
   email: 'support4obisity@gmail.com',
-  github: 'https://github.com/your-username',
-  discord: 'https://discord.gg/your-invite',
-  website: 'https://example.com',
+  discord: 'https://discord.gg/FpYvkYNPvj',
+  website: 'https://obisitybot.onrender.com/',
 };
 
 export default function Footer() {

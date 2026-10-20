@@ -1,4 +1,4 @@
-// Discord OAuth2 Login / Session. Phiên đăng nhập lưu trong cookie httpOnly chứa JWT (user + access token Discord).
+// Discord OAuth2 Login / Session
 import { Router } from 'express';
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
@@ -8,13 +8,11 @@ const API = 'https://discord.com/api/v10';
 const SESSION_COOKIE = 'session';
 const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
 
-// Hàm helper lấy redirect URI chuẩn xác từ biến môi trường SERVER_URL
 const getRedirectUri = () => {
   const baseUrl = process.env.SERVER_URL?.replace(/\/$/, '') || '';
   return `${baseUrl}/api/auth/callback`;
 };
 
-// Đọc và xác thực JWT phiên từ cookie. Trả về null nếu không hợp lệ.
 export function getSession(req) {
   const token = req.cookies?.[SESSION_COOKIE];
   if (!token) return null;
@@ -25,11 +23,10 @@ export function getSession(req) {
   }
 }
 
-// Bước 1: chuyển người dùng sang trang cấp quyền của Discord, kèm state chống CSRF
+// Bước 1: Redirect sang Discord OAuth2
 router.get('/discord', (req, res) => {
   const state = crypto.randomBytes(16).toString('hex');
   
-  // Lưu state vào cookie (cấu hình SameSite Lax để hoạt động ổn định trên Render HTTPS)
   res.cookie('oauth_state', state, { 
     httpOnly: true, 
     sameSite: 'lax', 
@@ -48,19 +45,17 @@ router.get('/discord', (req, res) => {
   res.redirect(`https://discord.com/oauth2/authorize?${params.toString()}`);
 });
 
-// Bước 2: Discord redirect về đây với code, đổi code lấy access token và tạo phiên
+// Bước 2: Nhận Callback và Đổi Code lấy Token
 router.get('/callback', async (req, res, next) => {
   try {
     const { code, state } = req.query;
     const savedState = req.cookies?.oauth_state;
 
-    // Kiểm tra state chống CSRF
     if (!code || !state || (savedState && state !== savedState)) {
       return res.status(400).send('Invalid OAuth state');
     }
     res.clearCookie('oauth_state');
 
-    // Thực hiện exchange code lấy access_token
     const tokenRes = await fetch(`${API}/oauth2/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -81,19 +76,15 @@ router.get('/callback', async (req, res, next) => {
 
     const { access_token } = await tokenRes.json();
 
-    // Lấy thông tin user từ Discord API
     const meRes = await fetch(`${API}/users/@me`, { 
       headers: { Authorization: `Bearer ${access_token}` } 
     });
     
-    if (!meRes.ok) {
-      return res.status(401).send('Failed to fetch user profile from Discord');
-    }
+    if (!meRes.ok) return res.status(401).send('Failed to fetch user profile from Discord');
 
     const me = await meRes.json();
     const user = { id: me.id, username: me.username, global_name: me.global_name, avatar: me.avatar };
 
-    // Tạo JWT token và lưu vào Cookie
     const token = jwt.sign({ user, accessToken: access_token }, process.env.JWT_SECRET, { expiresIn: '7d' });
     
     res.cookie(SESSION_COOKIE, token, { 
@@ -103,7 +94,6 @@ router.get('/callback', async (req, res, next) => {
       maxAge: SESSION_TTL 
     });
 
-    // Chuyển hướng về trang Frontend Dashboard
     const clientUrl = process.env.CLIENT_URL?.replace(/\/$/, '') || '';
     res.redirect(`${clientUrl}/servers`);
   } catch (err) {
@@ -112,7 +102,6 @@ router.get('/callback', async (req, res, next) => {
   }
 });
 
-// Trả thông tin người dùng hiện tại (dùng cho AuthContext ở frontend)
 router.get('/me', (req, res) => {
   const session = getSession(req);
   if (!session) return res.status(401).json({ error: 'Unauthorized' });

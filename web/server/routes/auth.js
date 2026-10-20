@@ -1,77 +1,127 @@
-// Anti-spam, kiểm duyệt từ khoá & AI Auto-responder khi Ping Bot
-import { PermissionFlagsBits } from 'discord.js';
-import GuildConfig from '../database/models/GuildConfig.js';
-import { logger } from '../utils/logger.js';
-// TODO: Sửa lại đường dẫn import này cho đúng với vị trí file AI thực tế trong dự án (ví dụ: ../commands/setupai.js)
-import { generateAIResponse } from '../services/aiService.js'; 
+// Discord OAuth2 Login / Session. Phiên đăng nhập lưu trong cookie httpOnly chứa JWT (user + access token Discord).
+import { Router } from 'express';
+import crypto from 'node:crypto';
+import jwt from 'jsonwebtoken';
 
-export const name = 'messageCreate';
+const router = Router();
+const API = 'https://discord.com/api/v10';
+const SESSION_COOKIE = 'session';
+const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
 
-const configCache = new Map();
-const history = new Map();
-const CACHE_MS = 60_000;
+// Hàm helper lấy redirect URI chuẩn xác từ biến môi trường SERVER_URL
+const getRedirectUri = () => {
+  const baseUrl = process.env.SERVER_URL?.replace(/\/$/, '') || '';
+  return `${baseUrl}/api/auth/callback`;
+};
 
-async function getGuildConfig(guildId) {
-  const cached = configCache.get(guildId);
-  if (cached && Date.now() - cached.at < CACHE_MS) return cached.data;
-  const doc = await GuildConfig.findOne({ guildId }).lean();
-  configCache.set(guildId, { at: Date.now(), data: doc });
-  return doc;
-}
-
-const notify = (channel, text) =>
-  channel.send(text).then((m) => setTimeout(() => m.delete().catch(() => {}), 5000)).catch(() => {});
-
-export async function execute(message) {
-  if (!message.guild || message.author.bot) return;
-
-  const doc = await getGuildConfig(message.guild.id);
-  const cfg = doc?.antispam ?? null;
-  const isExempt = message.member?.permissions.has(PermissionFlagsBits.ManageMessages);
-
-  // 1 & 2) Kiểm duyệt từ khóa & Anti-spam
-  if (cfg?.enabled && !isExempt) {
-    const content = message.content.toLowerCase();
-    if (cfg.blockedWords?.some((w) => w && content.includes(w.toLowerCase()))) {
-      await message.delete().catch(() => {});
-      return notify(message.channel, `${message.author}, tin nhắn chứa từ bị cấm.`);
-    }
-
-    const key = `${message.guild.id}:${message.author.id}`;
-    const now = Date.now();
-    const windowMs = (cfg.windowSeconds || 5) * 1000;
-    const times = (history.get(key) ?? []).filter((t) => now - t < windowMs);
-    times.push(now);
-    history.set(key, times);
-
-    if (times.length > cfg.maxMessages) {
-      history.delete(key);
-      await message.delete().catch(() => {});
-      await message.member?.timeout(cfg.timeoutMinutes * 60_000, 'Anti-spam').catch((err) =>
-        logger.warn(`Timeout failed: ${err.message}`),
-      );
-      return notify(message.channel, `${message.author} bị timeout ${cfg.timeoutMinutes} phút do spam.`);
-    }
-  }
-
-  // 3) Xử lý AI khi người dùng Ping (@Bot)
-  if (message.mentions.has(message.client.user)) {
-    const prompt = message.content
-      .replace(`<@${message.client.user.id}>`, '')
-      .replace(`<@!${message.client.user.id}>`, '')
-      .trim();
-
-    if (!prompt) {
-      return message.reply('Bạn cần mình hỗ trợ gì thế? Hãy nhắn câu hỏi kèm lượt ping nhé!');
-    }
-
-    try {
-      await message.channel.sendTyping();
-      const response = await generateAIResponse(prompt, message.guild.id);
-      await message.reply(response);
-    } catch (err) {
-      logger.error(`[AI Mention Error]: ${err.message}`);
-      await message.reply('Đã xảy ra lỗi khi xử lý câu hỏi AI của bạn.');
-    }
+// Đọc và xác thực JWT phiên từ cookie. Trả về null nếu không hợp lệ.
+export function getSession(req) {
+  const token = req.cookies?.[SESSION_COOKIE];
+  if (!token) return null;
+  try {
+    return jwt.verify(token, process.env.JWT_SECRET);
+  } catch {
+    return null;
   }
 }
+
+// Bước 1: chuyển người dùng sang trang cấp quyền của Discord, kèm state chống CSRF
+router.get('/discord', (req, res) => {
+  const state = crypto.randomBytes(16).toString('hex');
+  
+  // Lưu state vào cookie (cấu hình SameSite Lax để hoạt động ổn định trên Render HTTPS)
+  res.cookie('oauth_state', state, { 
+    httpOnly: true, 
+    sameSite: 'lax', 
+    secure: process.env.NODE_ENV === 'production', 
+    maxAge: 10 * 60 * 1000 
+  });
+
+  const params = new URLSearchParams({
+    client_id: process.env.CLIENT_ID,
+    redirect_uri: getRedirectUri(),
+    response_type: 'code',
+    scope: 'identify guilds',
+    state,
+  });
+
+  res.redirect(`https://discord.com/oauth2/authorize?${params.toString()}`);
+});
+
+// Bước 2: Discord redirect về đây với code, đổi code lấy access token và tạo phiên
+router.get('/callback', async (req, res, next) => {
+  try {
+    const { code, state } = req.query;
+    const savedState = req.cookies?.oauth_state;
+
+    // Kiểm tra state chống CSRF
+    if (!code || !state || (savedState && state !== savedState)) {
+      return res.status(400).send('Invalid OAuth state');
+    }
+    res.clearCookie('oauth_state');
+
+    // Thực hiện exchange code lấy access_token
+    const tokenRes = await fetch(`${API}/oauth2/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: process.env.CLIENT_ID,
+        client_secret: process.env.CLIENT_SECRET,
+        grant_type: 'authorization_code',
+        code: String(code),
+        redirect_uri: getRedirectUri(),
+      }),
+    });
+
+    if (!tokenRes.ok) {
+      const errorText = await tokenRes.text();
+      console.error('[OAuth2 Error Details]:', errorText);
+      return res.status(401).send('Token exchange failed');
+    }
+
+    const { access_token } = await tokenRes.json();
+
+    // Lấy thông tin user từ Discord API
+    const meRes = await fetch(`${API}/users/@me`, { 
+      headers: { Authorization: `Bearer ${access_token}` } 
+    });
+    
+    if (!meRes.ok) {
+      return res.status(401).send('Failed to fetch user profile from Discord');
+    }
+
+    const me = await meRes.json();
+    const user = { id: me.id, username: me.username, global_name: me.global_name, avatar: me.avatar };
+
+    // Tạo JWT token và lưu vào Cookie
+    const token = jwt.sign({ user, accessToken: access_token }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    
+    res.cookie(SESSION_COOKIE, token, { 
+      httpOnly: true, 
+      sameSite: 'lax', 
+      secure: process.env.NODE_ENV === 'production', 
+      maxAge: SESSION_TTL 
+    });
+
+    // Chuyển hướng về trang Frontend Dashboard
+    const clientUrl = process.env.CLIENT_URL?.replace(/\/$/, '') || '';
+    res.redirect(`${clientUrl}/servers`);
+  } catch (err) {
+    console.error('[OAuth2 Callback Error]:', err);
+    next(err);
+  }
+});
+
+// Trả thông tin người dùng hiện tại (dùng cho AuthContext ở frontend)
+router.get('/me', (req, res) => {
+  const session = getSession(req);
+  if (!session) return res.status(401).json({ error: 'Unauthorized' });
+  res.json(session.user);
+});
+
+router.post('/logout', (req, res) => {
+  res.clearCookie(SESSION_COOKIE);
+  res.json({ ok: true });
+});
+
+export default router;

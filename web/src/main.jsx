@@ -1,0 +1,20 @@
+// Entry point React: bọc ứng dụng bằng Router, ngôn ngữ và phiên đăng nhập
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import App from './App.jsx';
+import { LanguageProvider } from './context/LanguageContext.jsx';
+import { AuthProvider } from './context/AuthContext.jsx';
+import './index.css';
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <BrowserRouter>
+      <LanguageProvider>
+        <AuthProvider>
+          <App />
+        </AuthProvider>
+      </LanguageProvider>
+    </BrowserRouter>
+  </React.StrictMode>,
+);

@@ -1,0 +1,32 @@
+/* Style toàn cục: Tailwind + các class Glassmorphism dùng chung.
+   --accent / --accent-2 / --overlay được Settings cập nhật động. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --accent: 124 92 255;
+  --accent-2: 34 211 238;
+  --overlay: 0.6;
+}
+
+html, body, #root { min-height: 100%; }
+body { @apply bg-slate-950 text-white antialiased; }
+
+/* Thẻ kính: nền mờ, viền sáng, bo góc lớn */
+.glass {
+  @apply bg-white/10 backdrop-blur-xl border border-white/20 shadow-2xl rounded-2xl;
+}
+
+.glass-input {
+  @apply w-full bg-white/5 border border-white/15 rounded-xl px-4 py-2.5 outline-none transition focus:border-violet-400 focus:bg-white/10;
+}
+
+.btn-primary {
+  @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl font-semibold text-white transition hover:brightness-110 disabled:opacity-50;
+  background-image: linear-gradient(90deg, rgb(var(--accent)), rgb(var(--accent-2)));
+}
+
+.btn-ghost {
+  @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl border border-white/20 bg-white/5 hover:bg-white/15 transition;
+}

@@ -1,0 +1,33 @@
+{
+  "name": "discord-system-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Web Dashboard quản lý Discord Bot: Glassmorphism, Framer Motion, TailwindCSS",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,magenta \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "node --watch server/index.js",
+    "dev:client": "vite",
+    "build": "vite build",
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "framer-motion": "^11.11.1",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.6.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.2",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.0.1",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.13",
+    "vite": "^5.4.8"
+  }
+}

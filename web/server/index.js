@@ -16,6 +16,9 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 const app = express();
 
+// BẮT BUỘC KHI DEPLOY LÊN RENDER: Giúp Express nhận diện đúng HTTPS và Cookie Secure từ Reverse Proxy
+app.set('trust proxy', 1);
+
 app.use(express.json({ limit: '100kb' }));
 app.use(cookieParser());
 

@@ -1,8 +1,9 @@
-// API quản lý server: lọc server người dùng là Administrator, đọc/ghi cấu hình module từng server.
+// API quản lý server: lọc server người dùng là Administrator, đọc/ghi cấu hình module từng server, Audit Logs & Security.
 // Quyền được kiểm tra lại mỗi request bằng access token Discord (có cache 60 giây).
 import { Router } from 'express';
 import mongoose from 'mongoose';
 import { getSession } from './auth.js';
+import { AuditLog } from '../../bot/src/database/models/GuildConfig.js';
 
 const router = Router();
 const API = 'https://discord.com/api/v10';
@@ -19,6 +20,7 @@ const DEFAULTS = {
   stats: { enabled: false, template: '{label}: {count}' },
   antispam: { enabled: false, maxMessages: 5, windowSeconds: 5, timeoutMinutes: 5, blockedWords: [] },
   ai: { provider: 'gemini', model: '', baseUrl: '' },
+  security: { autoRoleEnabled: false, autoRoleId: null, antiRaidEnabled: false, minAccountAgeDays: 7, autoBanBadWords: false }
 };
 
 // Các trường cho phép ghi từ Dashboard (whitelist để tránh ghi đè trường nhạy cảm)
@@ -29,6 +31,7 @@ const EDITABLE = {
   stats: ['enabled', 'template'],
   antispam: ['enabled', 'maxMessages', 'windowSeconds', 'timeoutMinutes', 'blockedWords'],
   ai: ['provider', 'model', 'baseUrl'],
+  security: ['autoRoleEnabled', 'autoRoleId', 'antiRaidEnabled', 'minAccountAgeDays', 'autoBanBadWords']
 };
 
 // Lấy danh sách server của user từ Discord (có cache)
@@ -60,27 +63,35 @@ router.use((req, res, next) => {
 
 // Middleware: server trong URL phải tồn tại và user là Admin
 async function requireAdminGuild(req, res, next) {
-  const guilds = await getUserGuilds(req.session);
-  const guild = guilds.find((g) => g.id === req.params.guildId && isAdmin(g));
-  if (!guild) return res.status(403).json({ error: 'NOT_ADMIN' });
-  req.guild = guild;
-  next();
+  try {
+    const guilds = await getUserGuilds(req.session);
+    const guild = guilds.find((g) => g.id === req.params.guildId && isAdmin(g));
+    if (!guild) return res.status(403).json({ error: 'NOT_ADMIN' });
+    req.guild = guild;
+    next();
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message });
+  }
 }
 
 // Danh sách server quản trị, đánh dấu bot đã có mặt hay chưa
 router.get('/', async (req, res) => {
-  const guilds = await getUserGuilds(req.session);
-  const status = await db().collection('botstatuses').findOne({ _id: 'main' });
-  const botGuilds = new Set((status?.guilds ?? []).map((g) => g.id));
-  res.json(
-    guilds.filter(isAdmin).map((g) => ({
-      id: g.id,
-      name: g.name,
-      icon: g.icon,
-      owner: g.owner,
-      botIn: botGuilds.has(g.id),
-    })),
-  );
+  try {
+    const guilds = await getUserGuilds(req.session);
+    const status = await db().collection('botstatuses').findOne({ _id: 'main' });
+    const botGuilds = new Set((status?.guilds ?? []).map((g) => g.id));
+    res.json(
+      guilds.filter(isAdmin).map((g) => ({
+        id: g.id,
+        name: g.name,
+        icon: g.icon,
+        owner: g.owner,
+        botIn: botGuilds.has(g.id),
+      })),
+    );
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message });
+  }
 });
 
 // Thông số tổng quan + trạng thái module của một server
@@ -104,6 +115,7 @@ router.get('/:guildId/overview', requireAdminGuild, async (req, res) => {
       stats: Boolean(config.stats?.enabled),
       antispam: Boolean(config.antispam?.enabled),
       ai: Boolean(config.ai?.apiKey),
+      security: Boolean(config.security?.autoRoleEnabled || config.security?.antiRaidEnabled)
     },
   });
 });
@@ -125,7 +137,7 @@ router.get('/:guildId/config', requireAdminGuild, async (req, res) => {
 // Chuẩn hoá giá trị đầu vào theo loại trường
 function sanitize(key, value) {
   if (key === 'blockedWords') return Array.isArray(value) ? value.map(String).slice(0, 200) : [];
-  if (['maxMessages', 'windowSeconds', 'timeoutMinutes'].includes(key)) {
+  if (['maxMessages', 'windowSeconds', 'timeoutMinutes', 'minAccountAgeDays'].includes(key)) {
     return Math.min(Math.max(Number(value) || 1, 1), 3600);
   }
   if (key === 'provider') return ['gemini', 'claude', 'openai', 'custom'].includes(value) ? value : 'gemini';
@@ -155,7 +167,79 @@ router.put('/:guildId/config', requireAdminGuild, async (req, res) => {
 
   set.updatedAt = new Date();
   await db().collection('guildconfigs').updateOne({ guildId: req.params.guildId }, { $set: set }, { upsert: true });
+
+  // Lưu Audit Log khi có thay đổi cấu hình trên Web
+  await AuditLog.create({
+    guildId: req.params.guildId,
+    action: 'DASHBOARD_CONFIG_UPDATE',
+    executor: req.session.user.username || 'Dashboard User',
+    details: 'Cập nhật cấu hình server từ Web Dashboard',
+    level: 'INFO'
+  }).catch(() => {});
+
   res.json({ ok: true });
+});
+
+// -------------------------------------------------------------
+// [MỚI] API Lấy danh sách Audit Logs (Tab 📋 Nhật Ký Hoạt Động)
+// -------------------------------------------------------------
+router.get('/:guildId/logs', requireAdminGuild, async (req, res) => {
+  try {
+    const { guildId } = req.params;
+    const logs = await AuditLog.find({ guildId })
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .lean();
+
+    res.json({ success: true, logs });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// [MỚI] API Lấy & Lưu Cấu Hình Bảo Mật (Tab 🛡️ Bảo Mật Server)
+// -------------------------------------------------------------
+router.get('/:guildId/security', requireAdminGuild, async (req, res) => {
+  try {
+    const { guildId } = req.params;
+    const doc = await db().collection('guildconfigs').findOne({ guildId });
+    res.json({ success: true, security: doc?.security ?? DEFAULTS.security });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/:guildId/security', requireAdminGuild, async (req, res) => {
+  try {
+    const { guildId } = req.params;
+    const { security } = req.body;
+
+    const set = {};
+    if (security && typeof security === 'object') {
+      for (const key of EDITABLE.security) {
+        if (security[key] !== undefined) set[`security.${key}`] = sanitize(key, security[key]);
+      }
+    }
+
+    if (!Object.keys(set).length) return res.status(400).json({ error: 'NO_CHANGES' });
+
+    set.updatedAt = new Date();
+    await db().collection('guildconfigs').updateOne({ guildId }, { $set: set }, { upsert: true });
+
+    // Ghi lại vết Log thao tác đổi cấu hình bảo mật
+    await AuditLog.create({
+      guildId,
+      action: 'SECURITY_UPDATE',
+      executor: req.session.user.username || 'Dashboard User',
+      details: 'Cập nhật cấu hình bảo mật server từ Web Dashboard',
+      level: 'WARN'
+    }).catch(() => {});
+
+    res.json({ success: true, message: 'Đã lưu cấu hình bảo mật thành công!' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 export default router;

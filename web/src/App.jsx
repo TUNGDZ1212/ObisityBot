@@ -13,6 +13,8 @@ import StatsModule from './pages/StatsModule.jsx';
 import BoostModule from './pages/BoostModule.jsx';
 import AISettings from './pages/AISettings.jsx';
 import Settings, { applyUiSettings } from './pages/Settings.jsx';
+import SecurityModule from './pages/SecurityModule.jsx';
+import LogsModule from './pages/LogsModule.jsx';
 import { useAuth } from './context/AuthContext.jsx';
 import { useLanguage } from './context/LanguageContext.jsx';
 
@@ -82,6 +84,8 @@ export default function App() {
           <Route path="welcome" element={<WelcomeGoodbyeModule />} />
           <Route path="stats" element={<StatsModule />} />
           <Route path="boost" element={<BoostModule />} />
+          <Route path="security" element={<SecurityModule />} />
+          <Route path="logs" element={<LogsModule />} />
           <Route path="ai" element={<AISettings />} />
           <Route path="settings" element={<Settings />} />
         </Route>

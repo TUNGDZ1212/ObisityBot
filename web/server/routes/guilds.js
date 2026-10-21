@@ -1,11 +1,22 @@
-// API quản lý server: lọc server người dùng là Administrator, đọc/ghi cấu hình module từng server, Audit Logs & Security.
-// Quyền được kiểm tra lại mỗi request bằng access token Discord (có cache 60 giây).
+// API quản lý server: lọc server người dùng là Administrator, đọc/ghi cấu hình module từng server, Audit Logs & Security
 import { Router } from 'express';
 import mongoose from 'mongoose';
 import { getSession } from './auth.js';
 
-// Lấy Model trực tiếp từ Mongoose instance (Tránh lỗi sai đường dẫn import)
-const AuditLog = mongoose.models.AuditLog || mongoose.model('AuditLog');
+// Khai báo an toàn: Lấy model đã register hoặc tự định nghĩa Schema nếu chưa có
+const AuditLogSchema = new mongoose.Schema(
+  {
+    guildId: { type: String, required: true, index: true },
+    action: { type: String, required: true },
+    executor: { type: String, default: 'System' },
+    target: { type: String, default: '' },
+    details: { type: String, default: '' },
+    level: { type: String, enum: ['INFO', 'WARN', 'DANGER'], default: 'INFO' }
+  },
+  { timestamps: true }
+);
+
+const AuditLog = mongoose.models.AuditLog || mongoose.model('AuditLog', AuditLogSchema);
 
 const router = Router();
 const API = 'https://discord.com/api/v10';

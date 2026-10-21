@@ -25,7 +25,7 @@ const CACHE_MS = 60_000;
 const guildCache = new Map();
 const db = () => mongoose.connection.db;
 
-// Giá trị mặc định (phải khớp với schema của bot để hiển thị đúng khi chưa cấu hình)
+// Giá trị mặc định cho toàn bộ các module (Phải trùng khớp với Mongoose Schema của Bot)
 const DEFAULTS = {
   welcome: { enabled: false, channelId: '', message: 'Chào mừng {user} đến với {server}! 🎉', useEmbed: true },
   goodbye: { enabled: false, channelId: '', message: '{username} đã rời khỏi {server}. 👋', useEmbed: true },
@@ -33,10 +33,43 @@ const DEFAULTS = {
   stats: { enabled: false, template: '{label}: {count}' },
   antispam: { enabled: false, maxMessages: 5, windowSeconds: 5, timeoutMinutes: 5, blockedWords: [] },
   ai: { provider: 'gemini', model: '', baseUrl: '' },
-  security: { autoRoleEnabled: false, autoRoleId: null, antiRaidEnabled: false, minAccountAgeDays: 7, autoBanBadWords: false }
+  security: {
+    // Tab 1: Anti-Nuke & Raid
+    antiRaidEnabled: false,
+    minAccountAgeDays: 7,
+    antiNukeChannelsEnabled: false,
+    maxChannelDeletePerMin: 3,
+    antiNukeRolesEnabled: false,
+    maxRoleDeletePerMin: 3,
+    antiMassBanEnabled: false,
+    maxBanPerMin: 5,
+    antiBotJoinEnabled: false,
+
+    // Tab 2: Content & Anti-Spam
+    antiLinkEnabled: false,
+    antiInviteEnabled: false,
+    antiMassMentionEnabled: false,
+    maxMentions: 5,
+    antiBadwordsEnabled: false,
+    badwordsList: [],
+    antiGhostPingEnabled: false,
+    antiDuplicateEnabled: false,
+
+    // Tab 3: Verification & Roles
+    autoRoleEnabled: false,
+    autoRoleId: '',
+    verificationGateEnabled: false,
+    verificationRoleId: '',
+    whitelistRoles: [],
+    whitelistUsers: [],
+
+    // Tab 4: Emergency & Logs
+    lockdownMode: false,
+    logChannelId: ''
+  }
 };
 
-// Các trường cho phép ghi từ Dashboard (whitelist để tránh ghi đè trường nhạy cảm)
+// Danh sách Whitelist các trường được phép cập nhật từ Web Dashboard
 const EDITABLE = {
   welcome: ['enabled', 'channelId', 'message', 'useEmbed'],
   goodbye: ['enabled', 'channelId', 'message', 'useEmbed'],
@@ -44,10 +77,17 @@ const EDITABLE = {
   stats: ['enabled', 'template'],
   antispam: ['enabled', 'maxMessages', 'windowSeconds', 'timeoutMinutes', 'blockedWords'],
   ai: ['provider', 'model', 'baseUrl'],
-  security: ['autoRoleEnabled', 'autoRoleId', 'antiRaidEnabled', 'minAccountAgeDays', 'autoBanBadWords']
+  security: [
+    'antiRaidEnabled', 'minAccountAgeDays', 'antiNukeChannelsEnabled', 'maxChannelDeletePerMin',
+    'antiNukeRolesEnabled', 'maxRoleDeletePerMin', 'antiMassBanEnabled', 'maxBanPerMin', 'antiBotJoinEnabled',
+    'antiLinkEnabled', 'antiInviteEnabled', 'antiMassMentionEnabled', 'maxMentions',
+    'antiBadwordsEnabled', 'badwordsList', 'antiGhostPingEnabled', 'antiDuplicateEnabled',
+    'autoRoleEnabled', 'autoRoleId', 'verificationGateEnabled', 'verificationRoleId',
+    'whitelistRoles', 'whitelistUsers', 'lockdownMode', 'logChannelId'
+  ]
 };
 
-// Lấy danh sách server của user từ Discord (có cache)
+// Lấy danh sách server của user từ Discord (có cache 60s)
 async function getUserGuilds(session) {
   const cached = guildCache.get(session.user.id);
   if (cached && Date.now() - cached.at < CACHE_MS) return cached.guilds;
@@ -63,10 +103,10 @@ async function getUserGuilds(session) {
   return guilds;
 }
 
-// Administrator hoặc chủ server
+// Kiểm tra Administrator hoặc Owner
 const isAdmin = (g) => g.owner || (BigInt(g.permissions) & ADMIN_BIT) === ADMIN_BIT;
 
-// Mọi route /api/guilds đều yêu cầu đăng nhập
+// Middleware yêu cầu đăng nhập
 router.use((req, res, next) => {
   const session = getSession(req);
   if (!session) return res.status(401).json({ error: 'Unauthorized' });
@@ -74,7 +114,7 @@ router.use((req, res, next) => {
   next();
 });
 
-// Middleware: server trong URL phải tồn tại và user là Admin
+// Middleware xác thực quyền Admin đối với Guild trong tham số
 async function requireAdminGuild(req, res, next) {
   try {
     const guilds = await getUserGuilds(req.session);
@@ -87,7 +127,7 @@ async function requireAdminGuild(req, res, next) {
   }
 }
 
-// Danh sách server quản trị, đánh dấu bot đã có mặt hay chưa
+// Lấy danh sách Guild người dùng quản trị
 router.get('/', async (req, res) => {
   try {
     const guilds = await getUserGuilds(req.session);
@@ -107,7 +147,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Thông số tổng quan + trạng thái module của một server
+// Lấy dữ liệu tổng quan cho Dashboard
 router.get('/:guildId/overview', requireAdminGuild, async (req, res) => {
   const { guildId } = req.params;
   const status = await db().collection('botstatuses').findOne({ _id: 'main' });
@@ -128,12 +168,17 @@ router.get('/:guildId/overview', requireAdminGuild, async (req, res) => {
       stats: Boolean(config.stats?.enabled),
       antispam: Boolean(config.antispam?.enabled),
       ai: Boolean(config.ai?.apiKey),
-      security: Boolean(config.security?.autoRoleEnabled || config.security?.antiRaidEnabled)
+      security: Boolean(
+        config.security?.autoRoleEnabled || 
+        config.security?.antiRaidEnabled || 
+        config.security?.antiLinkEnabled ||
+        config.security?.lockdownMode
+      )
     },
   });
 });
 
-// Đọc cấu hình, API key được che (chỉ hiện 4 ký tự cuối)
+// Đọc cấu hình tổng quát
 router.get('/:guildId/config', requireAdminGuild, async (req, res) => {
   const stored = (await db().collection('guildconfigs').findOne({ guildId: req.params.guildId })) ?? {};
   const merged = {};
@@ -147,18 +192,23 @@ router.get('/:guildId/config', requireAdminGuild, async (req, res) => {
   res.json(merged);
 });
 
-// Chuẩn hoá giá trị đầu vào theo loại trường
+// Hàm ép kiểu và làm sạch dữ liệu đầu vào theo loại trường
 function sanitize(key, value) {
-  if (key === 'blockedWords') return Array.isArray(value) ? value.map(String).slice(0, 200) : [];
-  if (['maxMessages', 'windowSeconds', 'timeoutMinutes', 'minAccountAgeDays'].includes(key)) {
-    return Math.min(Math.max(Number(value) || 1, 1), 3600);
+  if (['blockedWords', 'badwordsList', 'whitelistRoles', 'whitelistUsers'].includes(key)) {
+    return Array.isArray(value) ? value.map(String).slice(0, 500) : [];
+  }
+  if ([
+    'maxMessages', 'windowSeconds', 'timeoutMinutes', 'minAccountAgeDays', 
+    'maxChannelDeletePerMin', 'maxRoleDeletePerMin', 'maxBanPerMin', 'maxMentions'
+  ].includes(key)) {
+    return Math.min(Math.max(Number(value) || 0, 0), 3600);
   }
   if (key === 'provider') return ['gemini', 'claude', 'openai', 'custom'].includes(value) ? value : 'gemini';
   if (typeof value === 'boolean') return value;
   return String(value ?? '').slice(0, 2000);
 }
 
-// Cập nhật cấu hình: chỉ ghi các trường trong whitelist; API key chỉ ghi khi người dùng nhập mới
+// Cập nhật cấu hình chung
 router.put('/:guildId/config', requireAdminGuild, async (req, res) => {
   const body = req.body ?? {};
   const set = {};
@@ -181,7 +231,6 @@ router.put('/:guildId/config', requireAdminGuild, async (req, res) => {
   set.updatedAt = new Date();
   await db().collection('guildconfigs').updateOne({ guildId: req.params.guildId }, { $set: set }, { upsert: true });
 
-  // Lưu Audit Log khi có thay đổi cấu hình trên Web
   await AuditLog.create({
     guildId: req.params.guildId,
     action: 'DASHBOARD_CONFIG_UPDATE',
@@ -194,7 +243,7 @@ router.put('/:guildId/config', requireAdminGuild, async (req, res) => {
 });
 
 // -------------------------------------------------------------
-// [MỚI] API Lấy danh sách Audit Logs (Tab 📋 Nhật Ký Hoạt Động)
+// API Lấy danh sách Audit Logs (Cho tab 📋 Nhật Ký Hoạt Động)
 // -------------------------------------------------------------
 router.get('/:guildId/logs', requireAdminGuild, async (req, res) => {
   try {
@@ -211,13 +260,14 @@ router.get('/:guildId/logs', requireAdminGuild, async (req, res) => {
 });
 
 // -------------------------------------------------------------
-// [MỚI] API Lấy & Lưu Cấu Hình Bảo Mật (Tab 🛡️ Bảo Mật Server)
+// API Lấy & Lưu Cấu Hình Bảo Mật Nâng Cao (Tab 🛡️ Bảo Mật Server)
 // -------------------------------------------------------------
 router.get('/:guildId/security', requireAdminGuild, async (req, res) => {
   try {
     const { guildId } = req.params;
     const doc = await db().collection('guildconfigs').findOne({ guildId });
-    res.json({ success: true, security: doc?.security ?? DEFAULTS.security });
+    const securityData = { ...DEFAULTS.security, ...(doc?.security ?? {}) };
+    res.json({ success: true, security: securityData });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -226,26 +276,28 @@ router.get('/:guildId/security', requireAdminGuild, async (req, res) => {
 router.post('/:guildId/security', requireAdminGuild, async (req, res) => {
   try {
     const { guildId } = req.params;
-    const { security } = req.body;
+    const inputSecurity = req.body.security || req.body;
 
     const set = {};
-    if (security && typeof security === 'object') {
+    if (inputSecurity && typeof inputSecurity === 'object') {
       for (const key of EDITABLE.security) {
-        if (security[key] !== undefined) set[`security.${key}`] = sanitize(key, security[key]);
+        if (inputSecurity[key] !== undefined) {
+          set[`security.${key}`] = sanitize(key, inputSecurity[key]);
+        }
       }
     }
 
-    if (!Object.keys(set).length) return res.status(400).json({ error: 'NO_CHANGES' });
+    if (!Object.keys(set).length) return res.status(400).json({ success: false, error: 'NO_CHANGES' });
 
     set.updatedAt = new Date();
     await db().collection('guildconfigs').updateOne({ guildId }, { $set: set }, { upsert: true });
 
-    // Ghi lại vết Log thao tác đổi cấu hình bảo mật
+    // Lưu vết Audit Log thao tác thay đổi cài đặt bảo mật
     await AuditLog.create({
       guildId,
       action: 'SECURITY_UPDATE',
-      executor: req.session.user.username || 'Dashboard User',
-      details: 'Cập nhật cấu hình bảo mật server từ Web Dashboard',
+      executor: req.session.user.username || 'Dashboard Admin',
+      details: 'Cập nhật cấu hình Trung Tâm Bảo Mật đa phân khu',
       level: 'WARN'
     }).catch(() => {});
 

@@ -3,13 +3,15 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
 import { getSession } from './auth.js';
-import { AuditLog } from '../../bot/src/database/models/GuildConfig.js';
+
+// Lấy Model trực tiếp từ Mongoose instance (Tránh lỗi sai đường dẫn import)
+const AuditLog = mongoose.models.AuditLog || mongoose.model('AuditLog');
 
 const router = Router();
 const API = 'https://discord.com/api/v10';
 const ADMIN_BIT = 0x8n;
 const CACHE_MS = 60_000;
-const guildCache = new Map(); // userId -> { at, guilds }
+const guildCache = new Map();
 const db = () => mongoose.connection.db;
 
 // Giá trị mặc định (phải khớp với schema của bot để hiển thị đúng khi chưa cấu hình)

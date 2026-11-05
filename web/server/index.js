@@ -23,8 +23,9 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '100kb' }));
 app.use(cookieParser());
 
-// Đăng ký các API Routes
+// Đăng ký các API Routes (Hỗ trợ cả /api/auth và /api/oauth2)
 app.use('/api/auth', authRoutes);
+app.use('/api/oauth2', authRoutes);
 app.use('/api/bot', botStatusRoutes);
 app.use('/api/guilds', guildRoutes);
 
@@ -60,7 +61,7 @@ mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
     console.log('[DB] MongoDB connected');
-    app.listen(PORT, () => console.log(`[WEB] API server running on port ${PORT}`));
+    app.listen(PORT, '0.0.0.0', () => console.log(`[WEB] API server running on port ${PORT}`));
   })
   .catch((err) => {
     console.error('[DB] Connection failed:', err.message);

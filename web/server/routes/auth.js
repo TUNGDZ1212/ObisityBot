@@ -8,9 +8,13 @@ const API = 'https://discord.com/api/v10';
 const SESSION_COOKIE = 'session';
 const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
 
+// Hàm lấy Redirect URI linh hoạt: Ưu tiên process.env.REDIRECT_URI, nếu không có sẽ tự tạo từ SERVER_URL
 const getRedirectUri = () => {
+  if (process.env.REDIRECT_URI) {
+    return process.env.REDIRECT_URI.trim();
+  }
   const baseUrl = process.env.SERVER_URL?.replace(/\/$/, '') || '';
-  return `${baseUrl}/api/auth/callback`;
+  return `${baseUrl}/api/oauth2/callback`;
 };
 
 export function getSession(req) {
@@ -26,12 +30,12 @@ export function getSession(req) {
 // Bước 1: Redirect sang Discord OAuth2
 router.get('/discord', (req, res) => {
   const state = crypto.randomBytes(16).toString('hex');
-  
-  res.cookie('oauth_state', state, { 
-    httpOnly: true, 
-    sameSite: 'lax', 
-    secure: process.env.NODE_ENV === 'production', 
-    maxAge: 10 * 60 * 1000 
+
+  res.cookie('oauth_state', state, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 10 * 60 * 1000
   });
 
   const params = new URLSearchParams({
@@ -76,22 +80,22 @@ router.get('/callback', async (req, res, next) => {
 
     const { access_token } = await tokenRes.json();
 
-    const meRes = await fetch(`${API}/users/@me`, { 
-      headers: { Authorization: `Bearer ${access_token}` } 
+    const meRes = await fetch(`${API}/users/@me`, {
+      headers: { Authorization: `Bearer ${access_token}` }
     });
-    
+
     if (!meRes.ok) return res.status(401).send('Failed to fetch user profile from Discord');
 
     const me = await meRes.json();
     const user = { id: me.id, username: me.username, global_name: me.global_name, avatar: me.avatar };
 
     const token = jwt.sign({ user, accessToken: access_token }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    
-    res.cookie(SESSION_COOKIE, token, { 
-      httpOnly: true, 
-      sameSite: 'lax', 
-      secure: process.env.NODE_ENV === 'production', 
-      maxAge: SESSION_TTL 
+
+    res.cookie(SESSION_COOKIE, token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: SESSION_TTL
     });
 
     const clientUrl = process.env.CLIENT_URL?.replace(/\/$/, '') || '';
